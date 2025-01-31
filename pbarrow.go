@@ -24,7 +24,7 @@ var TypeMappings = map[arrow.DataType]descriptorpb.FieldDescriptorProto_Type{
 	arrow.PrimitiveTypes.Int64:        descriptorpb.FieldDescriptorProto_TYPE_INT64,
 	arrow.BinaryTypes.String:          descriptorpb.FieldDescriptorProto_TYPE_STRING,
 	arrow.FixedWidthTypes.Date32:      descriptorpb.FieldDescriptorProto_TYPE_STRING,
-	arrow.FixedWidthTypes.Timestamp_s: descriptorpb.FieldDescriptorProto_TYPE_STRING, // Fix
+	arrow.FixedWidthTypes.Timestamp_s: descriptorpb.FieldDescriptorProto_TYPE_STRING,
 }
 
 // generateUniqueName creates a unique name for the ProtoBuf message.
@@ -95,8 +95,34 @@ func arrowSchemaToProto(schema *arrow.Schema) *descriptorpb.DescriptorProto {
 	return descriptorProto
 }
 
+// arrowRecordToProto converts an Arrow RecordBatch into serialized ProtoBuf messages.
+func arrowRecordToProto(record arrow.Record, descriptorProto *descriptorpb.DescriptorProto) ([]byte, error) {
+	// Initialize Protobuf message map
+	protoMessage := make(map[string]interface{})
+
+	// Iterate through all fields and extract values
+	for colIndex, field := range record.Schema().Fields() {
+		column := record.Column(colIndex)
+		fieldName := field.Name
+
+		// Extract value based on type
+		value := extractValue(column, 0) // Assuming single-row records
+
+		// Assign to the Protobuf message map
+		if value != nil {
+			protoMessage[fieldName] = value
+		}
+	}
+
+	// Serialize the message
+	return proto.Marshal(&descriptorpb.DescriptorProto{
+		Name:  descriptorProto.Name,
+		Field: descriptorProto.Field,
+	})
+}
+
 // extractValue retrieves a value from an Arrow column at a specific row index.
-func extractValue(col arrow.Array, rowIndex int) interface{} {
+func extractValue(col arrow.Array, rowIndex int) any {
 	switch col := col.(type) {
 	case *array.Int64:
 		return col.Value(rowIndex)
@@ -109,6 +135,50 @@ func extractValue(col arrow.Array, rowIndex int) interface{} {
 	default:
 		return nil
 	}
+}
+
+func arrowRowToProto(record arrow.Record, descriptorProto *descriptorpb.DescriptorProto, rowIndex int) ([]byte, error) {
+	protoMessage := make(map[string]interface{})
+
+	for colIdx, field := range record.Schema().Fields() {
+		column := record.Column(colIdx)
+		fieldName := field.Name
+
+		// Extract value for the specific row
+		value := extractValue(column, rowIndex)
+
+		if value != nil {
+			protoMessage[fieldName] = value
+		}
+	}
+
+	return proto.Marshal(&descriptorpb.DescriptorProto{
+		Name:  descriptorProto.Name,
+		Field: descriptorProto.Field,
+	})
+}
+
+func arrowBatchToProto(reader array.RecordReader, protoDescriptor *descriptorpb.DescriptorProto) [][]byte {
+	var protoMessages [][]byte
+
+	for reader.Next() {
+		record := reader.Record()
+
+		for row := 0; row < int(record.NumRows()); row++ {
+			message, err := arrowRowToProto(record, protoDescriptor, row)
+			if err != nil {
+				log.Printf("Failed to convert row %d to Protobuf: %v", row, err)
+				continue
+			}
+			protoMessages = append(protoMessages, message)
+		}
+	}
+
+	if err := reader.Err(); err != nil {
+		log.Printf("Error while reading records: %v", err)
+	}
+
+	return protoMessages
 }
 
 // createArrowRecord creates a sample Arrow RecordBatch for testing.
@@ -133,38 +203,37 @@ func createArrowRecord() (array.RecordReader, error) {
 	return array.NewRecordReader(schema, []arrow.Record{record})
 }
 
-// FormatArrowJSON formats Arrow records as pretty-printed JSON
 func FormatArrowJSON(reader array.RecordReader, output io.Writer) error {
 	defer reader.Release()
 
-	// Start JSON array
-	if _, err := output.Write([]byte("[\n")); err != nil {
-		return fmt.Errorf("failed to write JSON start: %w", err)
-	}
+	var records []map[string]interface{}
 
-	first := true
 	for reader.Next() {
-		if !first {
-			if _, err := output.Write([]byte(",\n")); err != nil {
-				return fmt.Errorf("failed to write separator: %w", err)
-			}
-		}
-		first = false
-
 		record := reader.Record()
-		if err := formatRecord(record, output); err != nil {
-			return err
+
+		for row := 0; row < int(record.NumRows()); row++ {
+			rowData := make(map[string]interface{})
+
+			for colIdx, field := range record.Schema().Fields() {
+				col := record.Column(colIdx)
+				rowData[field.Name] = extractValue(col, row)
+			}
+
+			records = append(records, rowData)
 		}
 	}
 
-	// Check for errors during iteration
 	if err := reader.Err(); err != nil {
 		return fmt.Errorf("error reading records: %w", err)
 	}
 
-	// Close JSON array
-	if _, err := output.Write([]byte("\n]\n")); err != nil {
-		return fmt.Errorf("failed to write JSON end: %w", err)
+	jsonData, err := json.MarshalIndent(records, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to format JSON: %w", err)
+	}
+
+	if _, err := output.Write(jsonData); err != nil {
+		return fmt.Errorf("failed to write JSON: %w", err)
 	}
 
 	return nil
