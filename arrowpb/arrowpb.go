@@ -30,13 +30,19 @@ func ConvertArrowRecord(record arrow.Record) ([]*arrowproto.Row, error) {
 				continue
 			}
 
-			switch j {
-			case 0: // id
-				row.Id = col.(*array.Int64).Value(i)
-			case 1: // name
-				row.Name = col.(*array.String).Value(i)
-			case 2: // score
-				row.Score = col.(*array.Float64).Value(i)
+			switch record.ColumnName(j) {
+			case "dep_delay":
+				row.DepDelay = col.(*array.Int64).Value(i)
+			case "arr_delay":
+				row.ArrDelay = col.(*array.Int64).Value(i)
+			case "air_time":
+				row.AirTime = col.(*array.Int64).Value(i)
+			case "distance":
+				row.Distance = col.(*array.Int64).Value(i)
+			case "dep_time":
+				row.DepTime = col.(*array.Float64).Value(i)
+			case "arr_time":
+				row.ArrTime = col.(*array.Float64).Value(i)
 			}
 		}
 
