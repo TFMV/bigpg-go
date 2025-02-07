@@ -16,6 +16,8 @@ This approach eliminates unnecessary serialization overhead, reducing latency an
 
 You'll first need to create a table in postgres, insert some data, then create a bigquery table with the same schema.
 
+Please note that the `sa.json` file is not included in the repo (no offense intended). You'll need to create a service account and download the credentials file from the Google Cloud Console and place it in the root of the repo.
+
 In Postgres:
 
 ```sql

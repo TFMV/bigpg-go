@@ -26,7 +26,7 @@ func main() {
 	)
 
 	// Load BigQuery Service Account JSON
-	sa, err := os.ReadFile("/Users/thomasmcgeehan/bigpg-go/bigpg-go/sa.json")
+	sa, err := os.ReadFile("../sa.json")
 	if err != nil {
 		log.Fatalf("Failed to read SA file: %v", err)
 	}
