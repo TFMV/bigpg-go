@@ -69,7 +69,6 @@ SELECT * FROM `bigpg-go.test.records`;
 
 You should see the following output:
 
-```bash
 | id | name | score |
 |----|------|-------|
 | 1  | Alice | 95.5  |
@@ -79,4 +78,3 @@ You should see the following output:
 | 5  | NULL  | 92.3  |
 | 6  | Eve   | NULL  |
 | 7  | Frank | 81.4  |
-```
