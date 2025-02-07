@@ -7,7 +7,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Map Arrow types to Protobuf types
@@ -24,28 +23,21 @@ func ConvertArrowRecord(record arrow.Record) ([]*arrowproto.Row, error) {
 	for i := 0; i < int(record.NumRows()); i++ {
 		row := &arrowproto.Row{}
 
-		// Extract ID (Int64)
-		idCol := record.Column(0).(*array.Int64)
-		if idCol.IsValid(i) {
-			row.Id = idCol.Value(i)
-		}
+		// Extract values based on actual schema
+		for j := 0; j < int(record.NumCols()); j++ {
+			col := record.Column(j)
+			if col.IsNull(i) {
+				continue
+			}
 
-		// Extract Name (String)
-		nameCol := record.Column(1).(*array.String)
-		if nameCol.IsValid(i) {
-			row.Name = nameCol.Value(i)
-		}
-
-		// Extract Score (Float64)
-		scoreCol := record.Column(2).(*array.Float64)
-		if scoreCol.IsValid(i) {
-			row.Score = scoreCol.Value(i)
-		}
-
-		// Extract CreatedAt (Timestamp)
-		tsCol := record.Column(3).(*array.Timestamp)
-		if tsCol.IsValid(i) {
-			row.CreatedAt = timestamppb.New(tsCol.Value(i).ToTime(arrow.Nanosecond))
+			switch j {
+			case 0: // id
+				row.Id = col.(*array.Int64).Value(i)
+			case 1: // name
+				row.Name = col.(*array.String).Value(i)
+			case 2: // score
+				row.Score = col.(*array.Float64).Value(i)
+			}
 		}
 
 		rows[i] = row
@@ -79,19 +71,18 @@ func ArrowSchemaToProto(schema *arrow.Schema) *storagepb.ProtoSchema {
 	for i, field := range schema.Fields() {
 		protoType := typeMapping[field.Type]
 		fields[i] = &descriptorpb.FieldDescriptorProto{
-			Name: &field.Name,
-			Type: protoType.Enum(),
+			Name:   &field.Name,
+			Type:   protoType.Enum(),
+			Number: proto.Int32(int32(i + 1)), // Add field numbers starting from 1
 		}
 	}
-
-	options := &descriptorpb.MessageOptions{}
 
 	name := string(fileDescriptor.Name())
 	return &storagepb.ProtoSchema{
 		ProtoDescriptor: &descriptorpb.DescriptorProto{
 			Name:    &name,
 			Field:   fields,
-			Options: options,
+			Options: &descriptorpb.MessageOptions{},
 		},
 	}
 }

@@ -52,9 +52,24 @@ func NewBigQueryWriteClient(ctx context.Context, serviceAccountJSON string, sche
 		return nil, fmt.Errorf("failed to create BigQuery Storage API client: %w", err)
 	}
 
+	// Create a new schema with UTC timezone for timestamp fields
+	fields := make([]arrow.Field, len(schema.Fields()))
+	for i, field := range schema.Fields() {
+		if field.Type.ID() == arrow.TIMESTAMP {
+			fields[i] = arrow.Field{
+				Name:     field.Name,
+				Type:     &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"},
+				Nullable: field.Nullable,
+			}
+		} else {
+			fields[i] = field
+		}
+	}
+	schemaWithTZ := arrow.NewSchema(fields, nil)
+
 	return &BigQueryWriteClient{
 		client: client,
-		schema: schema,
+		schema: schemaWithTZ,
 	}, nil
 }
 
@@ -107,24 +122,27 @@ func NewBigQueryRecordWriter(ctx context.Context, client *BigQueryWriteClient, p
 }
 
 func (w *BigQueryRecordWriter) Write(record arrow.Record) error {
+	fmt.Printf("Writing record with %d rows and %d columns\n", record.NumRows(), record.NumCols())
+
 	if !w.client.schema.Equal(record.Schema()) {
 		return fmt.Errorf("schema mismatch: expected %v but got %v", w.client.schema, record.Schema())
 	}
 
-	w.buffer.Reset()
-
-	if err := w.ipcWriter.Write(record); err != nil {
-		return fmt.Errorf("error writing record to buffer: %w", err)
+	// Convert Arrow record to Protobuf rows
+	rows, err := arrowpb.ConvertArrowRecord(record)
+	if err != nil {
+		return fmt.Errorf("failed to convert Arrow record to Protobuf: %w", err)
 	}
 
-	serializedData := w.buffer.Bytes()
-	if len(serializedData) == 0 {
-		return fmt.Errorf("serialized data is empty")
+	// Serialize Protobuf rows
+	serializedRows, err := arrowpb.SerializeRows(rows)
+	if err != nil {
+		return fmt.Errorf("failed to serialize Protobuf rows: %w", err)
 	}
 
 	protoData := &storagepb.AppendRowsRequest_ProtoData{
 		Rows: &storagepb.ProtoRows{
-			SerializedRows: [][]byte{serializedData},
+			SerializedRows: serializedRows,
 		},
 		WriterSchema: w.protoSchema,
 	}
@@ -134,13 +152,22 @@ func (w *BigQueryRecordWriter) Write(record arrow.Record) error {
 		Rows:        &storagepb.AppendRowsRequest_ProtoRows{ProtoRows: protoData},
 	}
 
+	// Add logging for request details
+	fmt.Printf("Sending AppendRowsRequest to stream: %s\n", w.writeStream.GetName())
+
 	maxRetries := 3
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		err := w.appendClient.Send(appendReq)
 		if err == nil {
-			fmt.Printf("AppendRowsRequest sent successfully on attempt %d\n", attempt+1)
-			return nil // Success, exit the function
+			// Add logging for response
+			resp, err := w.appendClient.Recv()
+			if err != nil {
+				fmt.Printf("Error receiving response: %v\n", err)
+			} else {
+				fmt.Printf("Response received: %+v\n", resp)
+			}
+			return nil
 		}
 
 		lastErr = err
@@ -153,7 +180,6 @@ func (w *BigQueryRecordWriter) Write(record arrow.Record) error {
 			continue
 		}
 
-		// Add a small delay before retrying
 		time.Sleep(time.Second * time.Duration(attempt+1))
 	}
 
@@ -186,4 +212,12 @@ func (w *BigQueryRecordWriter) Close() error {
 	defer memoryPool.PutAllocator(w.writerOptions.Allocator)
 
 	return nil
+}
+
+func (w *BigQueryRecordWriter) WriteToBigQuery(record arrow.Record) error {
+	return w.Write(record)
+}
+
+func (w *BigQueryRecordWriter) GetWriteStream() *storagepb.WriteStream {
+	return w.writeStream
 }
