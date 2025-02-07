@@ -2,13 +2,17 @@ syntax = "proto3";
 
 package arrowpb;
 
-option go_package = "github.com/TFMV/arrowpb/proto";
-
-import "google/protobuf/timestamp.proto";
+option go_package = "github.com/TFMV/bigpg-go/proto";
 
 message Row {
-  int64 id = 1;
-  string name = 2;
-  double score = 3;
-  google.protobuf.Timestamp created_at = 4;
+  int64 dep_delay = 1;
+  int64 arr_delay = 2;
+  int64 air_time = 3;
+  int64 distance = 4;
+  double dep_time = 5;
+  double arr_time = 6;
+}
+
+message Batch {
+    repeated Row rows = 1;
 }

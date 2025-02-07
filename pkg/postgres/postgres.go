@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
+	"strconv"
 	"strings"
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-adbc/go/adbc/drivermgr"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 )
 
 // PostgresSource handles connection to a PostgreSQL database using ADBC.
@@ -43,14 +46,23 @@ type PostgresRecordReader struct {
 	recordSet array.RecordReader
 }
 
-// GetPostgresRecordReader creates a PostgresRecordReader for the specified table.
 func (p *PostgresSource) GetPostgresRecordReader(ctx context.Context, tableName string) (*PostgresRecordReader, error) {
 	stmt, err := p.conn.NewStatement()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create statement: %w", err)
 	}
 
-	query := fmt.Sprintf("SELECT * FROM %s", tableName)
+	// Force PostgreSQL to return the correct Arrow types
+	query := fmt.Sprintf(`
+		SELECT 
+			dep_delay::BIGINT AS dep_delay, 
+			arr_delay::BIGINT AS arr_delay, 
+			air_time::BIGINT AS air_time, 
+			distance::BIGINT AS distance, 
+			dep_time::FLOAT8 AS dep_time, 
+			arr_time::FLOAT8 AS arr_time 
+		FROM %s`, tableName)
+
 	if err := stmt.SetSqlQuery(query); err != nil {
 		stmt.Close()
 		return nil, fmt.Errorf("failed to set SQL query: %w", err)
@@ -67,6 +79,38 @@ func (p *PostgresSource) GetPostgresRecordReader(ctx context.Context, tableName 
 		stmt:      stmt,
 		recordSet: recordSet,
 	}, nil
+}
+
+func ConvertNumericFields(record arrow.Record) arrow.Record {
+	for i := 0; i < int(record.NumCols()); i++ {
+		col := record.Column(i)
+		switch record.ColumnName(i) {
+		case "dep_time", "arr_time":
+			strArray, ok := col.(*array.String)
+			if !ok {
+				continue
+			}
+
+			floatBuilder := array.NewFloat64Builder(memory.DefaultAllocator)
+			for j := 0; j < int(strArray.Len()); j++ {
+				if strArray.IsNull(j) {
+					floatBuilder.AppendNull()
+				} else {
+					val, err := strconv.ParseFloat(strArray.Value(j), 64)
+					if err != nil {
+						log.Printf("Warning: failed to convert %s to float64: %v", strArray.Value(j), err)
+						floatBuilder.AppendNull()
+					} else {
+						floatBuilder.Append(val)
+					}
+				}
+			}
+
+			newColumn := floatBuilder.NewArray()
+			record.SetColumn(i, newColumn)
+		}
+	}
+	return record
 }
 
 // Read reads the next record from the PostgreSQL table.
@@ -167,4 +211,33 @@ func (p *PostgresSink) IngestToPostgres(ctx context.Context, tableName string, s
 // Close closes the ADBC connection associated with PostgresSink.
 func (p *PostgresSink) Close() error {
 	return p.conn.Close()
+}
+
+func ConvertDateFields(record arrow.Record) arrow.Record {
+	builder := array.NewDate64Builder(memory.DefaultAllocator)
+	defer builder.Release()
+
+	for i := 0; i < int(record.NumCols()); i++ {
+		col := record.Column(i)
+		if record.ColumnName(i) == "fl_date" {
+			dateCol, ok := col.(*array.Date32)
+			if !ok {
+				continue
+			}
+
+			for j := 0; j < int(dateCol.Len()); j++ {
+				if dateCol.IsNull(j) {
+					builder.AppendNull()
+				} else {
+					// Convert days to milliseconds
+					builder.Append(arrow.Date64(int64(dateCol.Value(j)) * 86400000))
+				}
+			}
+
+			newColumn := builder.NewArray()
+			record.SetColumn(i, newColumn)
+		}
+	}
+
+	return record
 }
